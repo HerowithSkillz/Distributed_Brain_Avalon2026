@@ -1,9 +1,15 @@
+import "dotenv/config";
 import http from "http";
 import { Server } from "socket.io";
 import app from "./app";
-import { registerSocketHandlers } from "./socket";
+import { initDatabase } from "./database/db";
+import { registerSocketHandlers } from "./handlers/socketHandler";
+import { JobManager } from "./managers/JobManager";
+import { WorkerManager } from "./managers/WorkerManager";
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT ?? 3000);
+
+initDatabase();
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
@@ -13,10 +19,13 @@ const io = new Server(httpServer, {
   },
 });
 
-registerSocketHandlers(io);
+const workerManager = new WorkerManager();
+const jobManager = new JobManager(workerManager);
+
+registerSocketHandlers(io, workerManager, jobManager);
 
 httpServer.listen(PORT, () => {
-  console.log("Orchestrator running on port 3000");
+  console.log(`Orchestrator running on port ${PORT}`);
 });
 
 export { io };

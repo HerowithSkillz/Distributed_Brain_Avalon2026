@@ -1,3 +1,5 @@
+export type WorkerStatus = "idle" | "computing" | "disconnected";
+
 export interface JobPayload {
   jobId: string;
   rowsA: number;
@@ -5,14 +7,36 @@ export interface JobPayload {
   colsB: number;
 }
 
-export interface ComputeTask {
+export interface Job {
+  jobId: string;
+  rowsA: number;
+  colsA: number;
+  colsB: number;
+  matrixA: number[];
+  matrixB: number[];
+  createdAt: number;
+  requesterId: string;
+  chunksExpected: number;
+  workersUsed: number;
+}
+
+export interface MatrixChunk {
+  chunkId: number;
+  matrixAChunk: number[];
+  rowsAChunk: number;
+}
+
+export interface Chunk {
   jobId: string;
   chunkId: number;
   matrixAChunk: number[];
-  matrixBFull: number[];
   rowsAChunk: number;
   colsA: number;
   colsB: number;
+}
+
+export interface ComputeTask extends Chunk {
+  matrixBFull: number[];
 }
 
 export interface ChunkResult {
@@ -20,19 +44,17 @@ export interface ChunkResult {
   chunkId: number;
   result: number[];
   computeTimeMs: number;
+  workerId?: string;
 }
 
-export interface WorkerInfo {
-  socketId: string;
-  status: "idle" | "computing" | "disconnected";
+export interface WorkerState {
+  workerId: string;
+  status: WorkerStatus;
   currentChunkId: number | null;
   currentJobId: string | null;
-}
-
-export interface MatrixChunk {
-  chunkId: number;
-  matrixAChunk: number[];
-  rowsAChunk: number;
+  lastSeen: number;
+  totalComputeMs: number;
+  tasksCompleted: number;
 }
 
 export interface JobCompletePayload {
@@ -43,9 +65,17 @@ export interface JobCompletePayload {
   totalTimeMs: number;
   workersUsed: number;
   chunksCount: number;
+  verified?: boolean;
+  verificationError?: string;
 }
 
 export interface JobErrorPayload {
   jobId: string;
   message: string;
+}
+
+export interface SystemStatusPayload {
+  activeWorkers: number;
+  jobsQueueLength: number;
+  completedJobs: number;
 }
