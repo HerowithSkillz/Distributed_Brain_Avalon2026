@@ -18,6 +18,42 @@ instrument(io, {
 
 const workers = new Map();
 const activeJobs = new Map();
+const workerLinks = new Map();
+
+function emitWorkerLinks(workerId) {
+  const links = workerLinks.get(workerId) || new Map();
+  const receivers = Array.from(links.entries()).map(([receiverId, activeJobsCount]) => ({
+    receiverId,
+    activeJobsCount,
+  }));
+  io.to(workerId).emit("worker-links", receivers);
+}
+
+function addWorkerLink(workerId, receiverId) {
+  if (!workerId || !receiverId) return;
+  const links = workerLinks.get(workerId) || new Map();
+  links.set(receiverId, (links.get(receiverId) || 0) + 1);
+  workerLinks.set(workerId, links);
+  emitWorkerLinks(workerId);
+}
+
+function removeWorkerLink(workerId, receiverId) {
+  if (!workerId || !receiverId) return;
+  const links = workerLinks.get(workerId);
+  if (!links) return;
+  const next = (links.get(receiverId) || 0) - 1;
+  if (next <= 0) {
+    links.delete(receiverId);
+  } else {
+    links.set(receiverId, next);
+  }
+  if (links.size === 0) {
+    workerLinks.delete(workerId);
+  } else {
+    workerLinks.set(workerId, links);
+  }
+  emitWorkerLinks(workerId);
+}
 
 function splitMatrixRows(matrixA, dimension, numChunks) {
   const chunks = [];
@@ -82,6 +118,8 @@ io.on("connection", (socket) => {
     } = payload;
     socket.join(roomId);
     workers.set(socket.id, { hasWebGPU, gpuName, llmCapable, status: "idle", roomId });
+    workerLinks.set(socket.id, new Map());
+    emitWorkerLinks(socket.id);
     console.log(`Worker Joined Room [${roomId}]: ${gpuName} (${socket.id})`);
     broadcastNetworkStatus();
   });
@@ -89,6 +127,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     if (workers.has(socket.id)) {
       workers.delete(socket.id);
+      workerLinks.delete(socket.id);
       console.log("Worker Disconnected:", socket.id);
       broadcastNetworkStatus();
     }
@@ -137,6 +176,7 @@ io.on("connection", (socket) => {
         status: "Assigned",
         msg: `LLM request assigned to worker ${selectedWorker.slice(0, 6)}...`,
       });
+      addWorkerLink(selectedWorker, socket.id);
       io.to(selectedWorker).emit("compute-task", {
         ...payload,
         taskType: "llm_generate",
@@ -194,6 +234,7 @@ io.on("connection", (socket) => {
         roomId,
         from: socket.id,
       });
+      addWorkerLink(workerId, socket.id);
     });
 
     broadcastNetworkStatus();
@@ -213,6 +254,7 @@ io.on("connection", (socket) => {
     if (job) {
       job.results[chunkId] = Array.isArray(result) ? result : [];
       job.receivedChunks += 1;
+      removeWorkerLink(socket.id, job.fromSocket);
     }
 
     if (workers.has(socket.id)) {
@@ -244,6 +286,7 @@ io.on("connection", (socket) => {
     }
 
     if (from && !jobId) {
+      removeWorkerLink(socket.id, from);
       io.to(from).emit("job-finished", result);
     }
   });

@@ -3,6 +3,65 @@ import { io } from "socket.io-client";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://192.168.1.62:3000";
 
+const buildGlobeMesh = (nodeCount = 520, maxEdges = 2600) => {
+  const nodes = [];
+  const rand = (() => {
+    let seed = 1337;
+    return () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+  })();
+
+  for (let i = 0; i < nodeCount; i += 1) {
+    const u = rand();
+    const v = rand();
+    const theta = 2 * Math.PI * u;
+    const phi = Math.acos(2 * v - 1);
+    const x = Math.sin(phi) * Math.cos(theta);
+    const y = Math.sin(phi) * Math.sin(theta);
+    const z = Math.cos(phi);
+
+    const px = 50 + x * 50;
+    const py = 50 + y * 50;
+    const depth = (z + 1) / 2;
+    nodes.push({ x: px, y: py, z, depth });
+  }
+
+  const edgeCandidates = [];
+  const maxDist = 8.4;
+  for (let i = 0; i < nodes.length; i += 1) {
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const a = nodes[i];
+      const b = nodes[j];
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > maxDist) continue;
+
+      const depth = (a.depth + b.depth) * 0.5;
+      edgeCandidates.push({ i, j, dist, depth });
+    }
+  }
+
+  edgeCandidates.sort((a, b) => a.dist - b.dist);
+  const degree = new Array(nodes.length).fill(0);
+  const edges = [];
+  for (let k = 0; k < edgeCandidates.length; k += 1) {
+    const edge = edgeCandidates[k];
+    if (edges.length >= maxEdges) break;
+    if (degree[edge.i] >= 9 || degree[edge.j] >= 9) continue;
+    degree[edge.i] += 1;
+    degree[edge.j] += 1;
+    edges.push(edge);
+  }
+
+  return {
+    nodes,
+    edges,
+  };
+};
+
 function App() {
   const [page, setPage] = useState("auth");
   const [mode, setMode] = useState("register");
@@ -17,6 +76,7 @@ function App() {
 
   const [workerConnected, setWorkerConnected] = useState(false);
   const [workerId, setWorkerId] = useState("");
+  const [workerReceivers, setWorkerReceivers] = useState([]);
   const [workerRoomType, setWorkerRoomType] = useState("public");
   const [workerRoomInput, setWorkerRoomInput] = useState("TEAM-A");
   const [workerReconnectKey, setWorkerReconnectKey] = useState(0);
@@ -43,6 +103,7 @@ function App() {
 
   const [adminConnected, setAdminConnected] = useState(false);
   const [adminLogs, setAdminLogs] = useState([]);
+  const globeMesh = useMemo(() => buildGlobeMesh(), []);
 
   const workerRoomId = useMemo(() => {
     if (workerRoomType === "private") {
@@ -203,15 +264,24 @@ function App() {
         roomId: workerRoomId,
       });
       setBrainState("idle");
+      // Warm up model right after donor connects to reduce first-request latency.
+      ensureWorkerLLMEngine().catch((error) => {
+        setWorkerModelStatus(`Model preload failed: ${error?.message || "Unknown error"}`);
+      });
     });
 
     socket.on("disconnect", () => {
       setWorkerConnected(false);
       setBrainState("disconnected");
+      setWorkerReceivers([]);
     });
 
     socket.on("network-status", (workers = []) => {
       setNetworkWorkers(workers);
+    });
+
+    socket.on("worker-links", (links = []) => {
+      setWorkerReceivers(Array.isArray(links) ? links : []);
     });
 
     socket.on("compute-task", async (payload = {}) => {
@@ -387,6 +457,7 @@ function App() {
   }, [computeTime, transferTime]);
 
   const idleWorkers = networkWorkers.filter((w) => w.status === "idle").length;
+  const visibleWorkerReceivers = workerReceivers.slice(0, 3);
 
   const activePublicRooms = useMemo(() => {
     const roomCounts = new Map();
@@ -447,20 +518,85 @@ function App() {
           <section className="panel brain-panel">
             <h3>The Global Brain</h3>
             <p className="subtitle">A live neural sphere reacting to network compute activity.</p>
-            <div className={`brain-sphere ${brainState}`}><span>Global Brain</span></div>
+            <div className={`brain-sphere ${brainState}`}>
+              <svg className="brain-mesh-svg" viewBox="0 0 100 100" role="img" aria-hidden="true">
+                {globeMesh.edges.map((edge, idx) => {
+                  const a = globeMesh.nodes[edge.i];
+                  const b = globeMesh.nodes[edge.j];
+                  const edgeOpacity = Math.min(0.92, 0.2 + edge.depth * 0.66);
+                  return (
+                    <line
+                      key={`e-${idx}`}
+                      x1={a.x}
+                      y1={a.y}
+                      x2={b.x}
+                      y2={b.y}
+                      stroke={`rgba(120, 246, 255, ${edgeOpacity.toFixed(3)})`}
+                      strokeWidth={edge.depth > 0.7 ? 0.34 : 0.24}
+                    />
+                  );
+                })}
+                {globeMesh.nodes.map((n, idx) => {
+                  const r = 0.18 + n.depth * 0.24;
+                  const nodeOpacity = 0.36 + n.depth * 0.6;
+                  return (
+                    <circle
+                      key={`n-${idx}`}
+                      cx={n.x}
+                      cy={n.y}
+                      r={r}
+                      fill={`rgba(174, 252, 255, ${nodeOpacity.toFixed(3)})`}
+                    />
+                  );
+                })}
+              </svg>
+              <span>Global Brain</span>
+            </div>
             <p className="state-text">State: <strong>{brainState === "computing" ? "Computing" : brainState === "disconnected" ? "Disconnected" : "Idle"}</strong></p>
             <p className="worker-id">Worker ID: {workerId ? `${workerId.slice(0, 8)}...` : "-"}</p>
           </section>
 
           <aside className="panel diagram-panel">
             <h3>Network Connection Diagram</h3>
-            <div className="diagram-grid">
-              <div className="node"><span className="pc-emoji">{"\u{1F4BB}"}</span><span>Receiver: Nova</span></div>
-              <div className="node"><span className="pc-emoji">{"\u{1F4BB}"}</span><span>Receiver: Orion</span></div>
-              <div className="node"><span className="pc-emoji">{"\u{1F4BB}"}</span><span>Receiver: Vega</span></div>
+            <div
+              className="diagram-grid"
+              style={
+                visibleWorkerReceivers.length > 0
+                  ? { gridTemplateColumns: `repeat(${visibleWorkerReceivers.length}, minmax(0, 1fr))` }
+                  : undefined
+              }
+            >
+              {visibleWorkerReceivers.length === 0 ? (
+                <div className="node empty-node"><span>No active receivers yet</span></div>
+              ) : (
+                visibleWorkerReceivers.map((link) => (
+                  <div className="node" key={link.receiverId}>
+                    <span className="pc-emoji">{"\u{1F4BB}"}</span>
+                    <span>Receiver: {String(link.receiverId || "").slice(0, 6)}...</span>
+                  </div>
+                ))
+              )}
             </div>
-            <div className="arrow-row">-&gt;  |  &lt;-</div>
-            <div className="node donor-node"><span className="pc-emoji">{"\u{1F4BB}"}</span><span>Donator: You</span></div>
+            {visibleWorkerReceivers.length > 0 ? (
+              <div
+                className="connection-lanes"
+                style={{ gridTemplateColumns: `repeat(${visibleWorkerReceivers.length}, minmax(0, 1fr))` }}
+              >
+                {visibleWorkerReceivers.map((link) => (
+                  <div className="connection-lane" key={`lane-${link.receiverId}`}>
+                    <span className="lane-line" />
+                    <span className="lane-arrow" />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div className="node donor-node">
+              <span className="pc-emoji">{"\u{1F4BB}"}</span>
+              <span>Donator: You</span>
+            </div>
+            {workerReceivers.length > 3 ? (
+              <p className="diagram-note">+{workerReceivers.length - 3} more active receiver(s)</p>
+            ) : null}
           </aside>
         </section>
 
