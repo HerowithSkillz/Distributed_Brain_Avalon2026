@@ -10,6 +10,8 @@ function App() {
 
   const workerSocketRef = useRef(null);
   const userSocketRef = useRef(null);
+  const llmEngineRef = useRef(null);
+  const llmLoadingRef = useRef(null);
 
   const [networkWorkers, setNetworkWorkers] = useState([]);
 
@@ -28,15 +30,16 @@ function App() {
   const [brainEarnings, setBrainEarnings] = useState(0);
 
   const [requestConnected, setRequestConnected] = useState(false);
-  const [requestMode, setRequestMode] = useState("ai");
-  const [requestDimension, setRequestDimension] = useState("512");
-  const [requestDisease, setRequestDisease] = useState("Alzheimers");
+  const [llmModelId] = useState("Qwen2.5-0.5B-Instruct-q4f16_1-MLC");
+  const [workerModelStatus, setWorkerModelStatus] = useState("Model not loaded");
+  const [requestPrompt, setRequestPrompt] = useState("");
+  const [requestMaxTokens, setRequestMaxTokens] = useState("128");
+  const [requestTemperature, setRequestTemperature] = useState("0.7");
   const [requestTargetType, setRequestTargetType] = useState("public");
   const [requestRoom, setRequestRoom] = useState("public");
   const [requestPrivateCode, setRequestPrivateCode] = useState("");
-  const [requestStatus, setRequestStatus] = useState("System idle. Ready to deploy.");
+  const [requestStatus, setRequestStatus] = useState("LLM request panel is ready.");
   const [resultPreview, setResultPreview] = useState("");
-  const [lastSubmittedMode, setLastSubmittedMode] = useState("ai");
 
   const [adminConnected, setAdminConnected] = useState(false);
   const [adminLogs, setAdminLogs] = useState([]);
@@ -82,23 +85,30 @@ function App() {
   const runWorkerCompute = (payload) => {
     const startedAt = performance.now();
 
-    const dimension = Math.max(2, Number(payload.dimension) || 64);
-    const rowCount = Math.max(1, Number(payload.rowCount) || dimension);
+    const dimension = Number.parseInt(payload.dimension, 10);
+    if (!Number.isFinite(dimension) || dimension <= 0) {
+      return { result: [], computeMs: 1, transferMs: 1, gpuLoad: 0 };
+    }
+    const safeDimension = Math.max(2, dimension);
+    const rowCount = Math.max(1, Number(payload.rowCount) || safeDimension);
     const matrixA = Array.isArray(payload.matrixA) ? payload.matrixA : [];
     const matrixB = Array.isArray(payload.matrixB) ? payload.matrixB : [];
+    if (!matrixA.length || !matrixB.length) {
+      return { result: [], computeMs: 1, transferMs: 1, gpuLoad: 0 };
+    }
 
     // Generate full chunk result size for server aggregation.
-    const outputLength = rowCount * dimension;
-    const inner = Math.min(dimension, 24);
+    const outputLength = rowCount * safeDimension;
+    const inner = Math.min(safeDimension, 24);
     const result = new Array(outputLength);
 
     for (let idx = 0; idx < outputLength; idx += 1) {
-      const row = Math.floor(idx / dimension) % rowCount;
-      const col = idx % dimension;
+      const row = Math.floor(idx / safeDimension) % rowCount;
+      const col = idx % safeDimension;
       let sum = 0;
       for (let k = 0; k < inner; k += 1) {
-        const a = Number(matrixA[row * dimension + k] || 0);
-        const b = Number(matrixB[k * dimension + col] || 0);
+        const a = Number(matrixA[row * safeDimension + k] || 0);
+        const b = Number(matrixB[k * safeDimension + col] || 0);
         sum += a * b;
       }
       result[idx] = Number(sum.toFixed(6));
@@ -110,6 +120,67 @@ function App() {
       computeMs: Math.max(1, Math.round(endedAt - startedAt)),
       transferMs: Math.max(1, Math.round((matrixA.length + matrixB.length) / 2000)),
       gpuLoad: Math.min(98, 55 + Math.floor(Math.random() * 40)),
+    };
+  };
+
+  const ensureWorkerLLMEngine = async () => {
+    if (llmEngineRef.current) return llmEngineRef.current;
+    if (llmLoadingRef.current) return llmLoadingRef.current;
+
+    llmLoadingRef.current = (async () => {
+      setWorkerModelStatus(`Loading ${llmModelId}...`);
+      const webllm = await import("@mlc-ai/web-llm");
+      const engine = await webllm.CreateMLCEngine(llmModelId, {
+        initProgressCallback: (report) => {
+          const percent = Math.round((report.progress || 0) * 100);
+          setWorkerModelStatus(`Loading ${llmModelId}: ${percent}%`);
+        },
+      });
+      llmEngineRef.current = engine;
+      setWorkerModelStatus(`Model ready: ${llmModelId}`);
+      return engine;
+    })().finally(() => {
+      llmLoadingRef.current = null;
+    });
+
+    return llmLoadingRef.current;
+  };
+
+  const runWorkerLLMGenerate = async (payload) => {
+    const prompt = String(payload.prompt || "").trim();
+    const startedAt = performance.now();
+    if (!prompt) {
+      return {
+        text: "No prompt was provided.",
+        computeMs: 1,
+      };
+    }
+
+    const engine = await ensureWorkerLLMEngine();
+    const maxTokens = Math.max(8, Number.parseInt(payload.maxTokens, 10) || 128);
+    const temperature = Number.isFinite(Number(payload.temperature))
+      ? Number(payload.temperature)
+      : 0.7;
+
+    const response = await engine.chat.completions.create({
+      model: llmModelId,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a coding assistant. Provide practical programming solutions. When code is requested, return clear runnable code in a fenced code block with language tag.",
+        },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: maxTokens,
+      temperature,
+    });
+
+    const text = response?.choices?.[0]?.message?.content || "";
+    const endedAt = performance.now();
+    return {
+      text,
+      computeMs: Math.max(1, Math.round(endedAt - startedAt)),
     };
   };
 
@@ -127,6 +198,7 @@ function App() {
       setWorkerId(socket.id);
       socket.emit("register-worker", {
         hasWebGPU: true,
+        llmCapable: true,
         gpuName: "WebGPU Adapter (Standard)",
         roomId: workerRoomId,
       });
@@ -142,10 +214,45 @@ function App() {
       setNetworkWorkers(workers);
     });
 
-    socket.on("compute-task", (payload = {}) => {
+    socket.on("compute-task", async (payload = {}) => {
       setBrainState("computing");
-      const { result, computeMs, transferMs, gpuLoad } = runWorkerCompute(payload);
 
+      const isLLMTask =
+        payload.type === "llm_generate" ||
+        payload.taskType === "llm_generate" ||
+        typeof payload.prompt === "string";
+
+      if (isLLMTask) {
+        try {
+          const { text, computeMs } = await runWorkerLLMGenerate(payload);
+          setComputeTime(computeMs);
+          setTransferTime(1);
+          setGpuUtilization(95);
+          setTasksSolved((prev) => prev + 1);
+          setBrainEarnings((prev) => Number((prev + 0.95).toFixed(2)));
+          socket.emit("compute-result", {
+            result: { text, model: llmModelId },
+            computeTimeMs: computeMs,
+            from: payload.from,
+            taskType: "llm_generate",
+          });
+        } catch (error) {
+          socket.emit("compute-result", {
+            result: {
+              text: `LLM generation failed: ${error?.message || "Unknown error"}`,
+              model: llmModelId,
+            },
+            computeTimeMs: 1,
+            from: payload.from,
+            taskType: "llm_generate",
+          });
+        } finally {
+          setTimeout(() => setBrainState("idle"), 300);
+        }
+        return;
+      }
+
+      const { result, computeMs, transferMs, gpuLoad } = runWorkerCompute(payload);
       setComputeTime(computeMs);
       setTransferTime(transferMs);
       setGpuUtilization(gpuLoad);
@@ -186,23 +293,26 @@ function App() {
       }
     });
 
-    socket.on("job-finished", (result = []) => {
-      if (lastSubmittedMode === "science") {
-        const raw = Number(Array.isArray(result) && result.length ? result[0] : 50);
-        const energy = (-1 * (Math.abs(raw % 100) + 20)).toFixed(2);
-        setRequestStatus(`Structure Stabilized. Free Energy: ${energy} kcal/mol`);
-        setResultPreview("");
+    socket.on("job-finished", (result) => {
+      if (result && typeof result === "object" && "text" in result) {
+        setRequestStatus("LLM response received.");
+        setResultPreview(String(result.text || ""));
+        return;
+      }
+
+      if (typeof result === "string") {
+        setRequestStatus("LLM response received.");
+        setResultPreview(result);
         return;
       }
 
       const preview = Array.isArray(result)
-        ? result
-            .slice(0, 3)
-            .map((n) => Number(n).toFixed(2))
-            .join(", ")
+        ? result.slice(0, 3).map((n) => Number(n).toFixed(2)).join(", ")
         : "";
 
-      setRequestStatus(`Training Complete. Computed ${Array.isArray(result) ? result.length : 0} parameters.`);
+      setRequestStatus(
+        "Invalid worker response (numeric matrix output). Ensure Donator page is updated and LLM worker path is active.",
+      );
       setResultPreview(preview ? `[${preview}...]` : "");
     });
 
@@ -210,7 +320,7 @@ function App() {
       socket.disconnect();
       userSocketRef.current = null;
     };
-  }, [lastSubmittedMode, page]);
+  }, [page]);
 
   useEffect(() => {
     if (page !== "server") return undefined;
@@ -248,38 +358,26 @@ function App() {
       setRequestStatus("Enter private room code to connect to a private donor.");
       return;
     }
-    const dimension = Math.max(16, Number.parseInt(requestDimension, 10) || 512);
-    const size = dimension * dimension;
-
-    const matrixA = Array.from({ length: size }, () => Math.random());
-    const matrixB = Array.from({ length: size }, () => Math.random());
-
-    if (requestMode === "science") {
-      setRequestStatus(`Synthesizing protein for ${requestDisease}...`);
-      socket.emit("request-matrix-job", {
-        task: `Folding Simulation: ${requestDisease}`,
-        matrixA,
-        matrixB,
-        dimension,
-        roomId,
-        type: "science",
-      });
-      setLastSubmittedMode("science");
-      setResultPreview("");
+    const prompt = requestPrompt.trim();
+    if (!prompt) {
+      setRequestStatus("Enter a prompt first.");
       return;
     }
 
-    setRequestStatus(`Uploading AI batch ${dimension}x${dimension} to room ${roomId}...`);
-    socket.emit("request-matrix-job", {
-      task: `AI Training Batch (${dimension}x${dimension})`,
-      matrixA,
-      matrixB,
-      dimension,
-      roomId,
-      type: "matrix",
-    });
-    setLastSubmittedMode("ai");
+    const maxTokens = Math.max(8, Number.parseInt(requestMaxTokens, 10) || 128);
+    const temperature = Number(requestTemperature);
+
+    setRequestStatus(`Dispatching LLM prompt to room ${roomId}...`);
     setResultPreview("");
+    socket.emit("request-matrix-job", {
+      task: "LLM Generation",
+      type: "llm_generate",
+      prompt,
+      maxTokens,
+      temperature: Number.isFinite(temperature) ? temperature : 0.7,
+      roomId,
+      modelId: llmModelId,
+    });
   };
 
   const efficiencyPercent = useMemo(() => {
@@ -310,6 +408,7 @@ function App() {
           <aside className="panel metrics-panel">
             <h3>Live Performance Metrics</h3>
             <p className="socket-state">{workerConnected ? "Connected" : "Disconnected"} to {SOCKET_URL}</p>
+            <p className="socket-state">{workerModelStatus}</p>
 
             <div className="room-config">
               <label className="mini-label">Room Mode</label>
@@ -398,8 +497,8 @@ function App() {
       <main className="page">
         {renderSiteTitle()}
         <section className="card requestor-card">
-          <h2>Distributed Task Launcher</h2>
-          <p className="subtitle">Select a computational task to offload to the grid.</p>
+          <h2>LLM Requestor</h2>
+          <p className="subtitle">Submit prompts to distributed donor workers running Qwen 0.5B class models.</p>
 
           <p className="socket-state">{requestConnected ? "Connected" : "Disconnected"} to {SOCKET_URL}</p>
 
@@ -443,26 +542,40 @@ function App() {
             ) : null}
           </div>
 
-          <div className="mode-tabs">
-            <button type="button" className={requestMode === "ai" ? "tab-btn active" : "tab-btn"} onClick={() => setRequestMode("ai")}>AI Training</button>
-            <button type="button" className={requestMode === "science" ? "tab-btn active" : "tab-btn"} onClick={() => setRequestMode("science")}>Cure Finder</button>
-          </div>
+          <label htmlFor="prompt">Prompt</label>
+          <textarea
+            id="prompt"
+            value={requestPrompt}
+            onChange={(e) => setRequestPrompt(e.target.value)}
+            rows={7}
+            placeholder="Ask your question here..."
+          />
 
-          {requestMode === "ai" ? (
-            <>
-              <label htmlFor="dimension">Matrix Dimension</label>
-              <input id="dimension" type="number" min={16} value={requestDimension} onChange={(e) => setRequestDimension(e.target.value)} />
-            </>
-          ) : (
-            <>
-              <label htmlFor="disease">Disease Target</label>
-              <select id="disease" value={requestDisease} onChange={(e) => setRequestDisease(e.target.value)}>
-                <option value="Alzheimers">Alzheimer's (Amyloid-beta)</option>
-                <option value="Cancer">p53 Tumor Suppressor</option>
-                <option value="Covid">Spike Protein</option>
-              </select>
-            </>
-          )}
+          <div className="llm-config-grid">
+            <div>
+              <label htmlFor="maxTokens">Max Tokens</label>
+              <input
+                id="maxTokens"
+                type="number"
+                min={8}
+                max={512}
+                value={requestMaxTokens}
+                onChange={(e) => setRequestMaxTokens(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="temperature">Temperature</label>
+              <input
+                id="temperature"
+                type="number"
+                step="0.1"
+                min="0"
+                max="2"
+                value={requestTemperature}
+                onChange={(e) => setRequestTemperature(e.target.value)}
+              />
+            </div>
+          </div>
 
           <label htmlFor="room">Target Public Room</label>
           <input
@@ -473,11 +586,19 @@ function App() {
             disabled={requestTargetType === "private"}
           />
 
-          <button type="button" onClick={launchRequestTask}>Launch Task</button>
+          <button type="button" onClick={launchRequestTask}>Generate Response</button>
 
           <div className="request-status-box">
             <p className="request-status">{requestStatus}</p>
-            {resultPreview ? <p className="result-preview">Preview: {resultPreview}</p> : null}
+          </div>
+
+          <div className="llm-response-box">
+            <p className="metric-label">LLM Response</p>
+            {resultPreview ? (
+              <p className="result-preview">{resultPreview}</p>
+            ) : (
+              <p className="result-empty">Response will appear here after generation.</p>
+            )}
           </div>
         </section>
 

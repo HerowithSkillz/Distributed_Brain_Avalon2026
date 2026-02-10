@@ -54,6 +54,16 @@ function getIdleWorkersInRoom(roomId) {
   return idle;
 }
 
+function getIdleLlmWorkersInRoom(roomId) {
+  const idle = [];
+  for (const [id, info] of workers) {
+    if (info.status === "idle" && info.roomId === roomId && info.llmCapable) {
+      idle.push(id);
+    }
+  }
+  return idle;
+}
+
 io.on("connection", (socket) => {
   console.log("Connection:", socket.id);
 
@@ -64,9 +74,14 @@ io.on("connection", (socket) => {
   });
 
   socket.on("register-worker", (payload = {}) => {
-    const { hasWebGPU = false, gpuName = "Unknown", roomId = "public" } = payload;
+    const {
+      hasWebGPU = false,
+      gpuName = "Unknown",
+      roomId = "public",
+      llmCapable = false,
+    } = payload;
     socket.join(roomId);
-    workers.set(socket.id, { hasWebGPU, gpuName, status: "idle", roomId });
+    workers.set(socket.id, { hasWebGPU, gpuName, llmCapable, status: "idle", roomId });
     console.log(`Worker Joined Room [${roomId}]: ${gpuName} (${socket.id})`);
     broadcastNetworkStatus();
   });
@@ -96,6 +111,43 @@ io.on("connection", (socket) => {
     });
 
     const idleWorkers = getIdleWorkersInRoom(roomId);
+
+    if (payload.type === "llm_generate") {
+      const selectedWorker = getIdleLlmWorkersInRoom(roomId)[0];
+      if (!selectedWorker) {
+        socket.emit("job-status", {
+          status: "Queued",
+          msg: `No idle LLM-capable workers in Room: ${roomId}`,
+        });
+        io.to("admins").emit("admin-activity", {
+          time: new Date().toLocaleTimeString(),
+          msg: `Failed LLM request: no workers in [${roomId}]`,
+        });
+        return;
+      }
+
+      const info = workers.get(selectedWorker);
+      if (info) {
+        info.status = "busy";
+        workers.set(selectedWorker, info);
+      }
+
+      broadcastNetworkStatus();
+      socket.emit("job-status", {
+        status: "Assigned",
+        msg: `LLM request assigned to worker ${selectedWorker.slice(0, 6)}...`,
+      });
+      io.to(selectedWorker).emit("compute-task", {
+        ...payload,
+        taskType: "llm_generate",
+        from: socket.id,
+      });
+      io.to("admins").emit("admin-activity", {
+        time: new Date().toLocaleTimeString(),
+        msg: `Assigned LLM request to Worker (${selectedWorker.slice(0, 4)}...) in [${roomId}]`,
+      });
+      return;
+    }
 
     if (!idleWorkers.length) {
       socket.emit("job-status", {
@@ -155,7 +207,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("compute-result", ({ jobId, chunkId, result, computeTimeMs, from } = {}) => {
+  socket.on("compute-result", ({ jobId, chunkId, result, computeTimeMs, from, taskType } = {}) => {
     const job = activeJobs.get(jobId);
 
     if (job) {
@@ -172,7 +224,10 @@ io.on("connection", (socket) => {
 
     io.to("admins").emit("admin-activity", {
       time: new Date().toLocaleTimeString(),
-      msg: `Chunk ${Number(chunkId) + 1 || "?"} received (${computeTimeMs || "?"}ms)`,
+      msg:
+        taskType === "llm_generate" || (result && typeof result === "object" && "text" in result)
+          ? `LLM response received (${computeTimeMs || "?"}ms)`
+          : `Chunk ${Number(chunkId) + 1 || "?"} received (${computeTimeMs || "?"}ms)`,
     });
 
     if (job && job.receivedChunks === job.totalChunks) {
@@ -189,7 +244,7 @@ io.on("connection", (socket) => {
     }
 
     if (from && !jobId) {
-      io.to(from).emit("job-finished", Array.isArray(result) ? result : []);
+      io.to(from).emit("job-finished", result);
     }
   });
 });
