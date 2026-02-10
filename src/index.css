@@ -112,7 +112,8 @@ label {
   color: #cce2ff;
 }
 
-input {
+input,
+select {
   border: 1px solid #365188;
   border-radius: 8px;
   padding: 0.7rem 0.75rem;
@@ -122,6 +123,11 @@ input {
 }
 
 input:focus {
+  border-color: #00b6ff;
+  outline: 2px solid rgba(0, 182, 255, 0.23);
+}
+
+select:focus {
   border-color: #00b6ff;
   outline: 2px solid rgba(0, 182, 255, 0.23);
 }
@@ -243,10 +249,45 @@ button:hover {
   letter-spacing: 0.4px;
 }
 
+.mini-label {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #9fb9ea;
+  text-transform: uppercase;
+}
+
 .socket-state {
   margin: 0;
   font-size: 0.8rem;
   color: #9fb9ea;
+}
+
+.room-config {
+  border: 1px solid #284579;
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: rgba(5, 12, 30, 0.8);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.radio-row {
+  display: flex;
+  gap: 1rem;
+  color: #c5d8ff;
+  font-size: 0.86rem;
+}
+
+.radio-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.small-btn {
+  padding: 0.55rem 0.7rem;
+  font-size: 0.82rem;
 }
 
 .metric-value {
@@ -452,6 +493,48 @@ button:hover {
   gap: 0.75rem;
 }
 
+.room-scanner {
+  border: 1px dashed #2d456e;
+  border-radius: 10px;
+  background: rgba(5, 12, 30, 0.7);
+  padding: 0.75rem;
+}
+
+.room-badges {
+  margin-top: 0.45rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.room-badge {
+  margin: 0;
+  border: 1px solid #365188;
+  background: rgba(30, 41, 59, 0.75);
+  color: #8cf7ff;
+  border-radius: 999px;
+  padding: 0.32rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.tab-btn {
+  margin: 0;
+  background: rgba(15, 23, 42, 0.88);
+  color: #94a3b8;
+  border: 1px solid #334155;
+}
+
+.tab-btn.active {
+  background: linear-gradient(135deg, #38bdf8, #3b82f6);
+  color: #061220;
+}
+
 .network-status {
   margin: 0;
   color: #b3c3e4;
@@ -484,6 +567,10 @@ button:hover {
   gap: 0.8rem;
 }
 
+.server-card.wide {
+  max-width: 980px;
+}
+
 .server-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -513,6 +600,53 @@ button:hover {
 .server-log-time {
   color: #9fb9ea;
   font-family: "Consolas", "Courier New", monospace;
+}
+
+.server-table-wrap {
+  overflow: auto;
+  border: 1px solid #2d456e;
+  border-radius: 10px;
+}
+
+.worker-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.worker-table th,
+.worker-table td {
+  padding: 0.62rem 0.7rem;
+  text-align: left;
+  border-bottom: 1px solid #2d456e;
+  color: #c5d8ff;
+  font-size: 0.88rem;
+}
+
+.worker-table th {
+  background: rgba(6, 15, 35, 0.9);
+  color: #9fb9ea;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+}
+
+.room-pill {
+  display: inline-block;
+  border: 1px solid #3f5f95;
+  background: rgba(15, 23, 42, 0.92);
+  border-radius: 999px;
+  padding: 0.15rem 0.52rem;
+  font-size: 0.76rem;
+  color: #8cf7ff;
+}
+
+.status-idle {
+  color: #00ff9d;
+  font-weight: 700;
+}
+
+.status-busy {
+  color: #ffae00;
+  font-weight: 700;
 }
 
 @keyframes pulse-idle {

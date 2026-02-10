@@ -28,9 +28,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("register-worker", (payload = {}) => {
-    const { hasWebGPU = false, gpuName = "Unknown" } = payload;
-    workers.set(socket.id, { hasWebGPU, gpuName, status: "idle" });
-    console.log(`Worker Registered: ${gpuName} (${socket.id})`);
+    const { hasWebGPU = false, gpuName = "Unknown", roomId = "public" } = payload;
+    socket.join(roomId);
+    workers.set(socket.id, { hasWebGPU, gpuName, status: "idle", roomId });
+    console.log(`Worker Joined Room [${roomId}]: ${gpuName} (${socket.id})`);
     broadcastNetworkStatus();
   });
 
@@ -42,18 +43,18 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("request-matrix-job", ({ task, data } = {}) => {
-    const input = Array.isArray(data) ? data : [];
-    console.log(`Job Request: \"${task}\" | Size: ${input.length}`);
+  socket.on("request-matrix-job", (payload = {}) => {
+    const { task = "Unknown Task", roomId = "public" } = payload;
+    console.log(`Job Request for Room [${roomId}]: "${task}"`);
 
     io.to("admins").emit("admin-activity", {
       time: new Date().toLocaleTimeString(),
-      msg: `User (${socket.id.slice(0, 4)}...) requested: ${task}`,
+      msg: `User (${socket.id.slice(0, 4)}...) requested: ${task} in [${roomId}]`,
     });
 
     let selectedWorker = null;
     for (const [id, info] of workers) {
-      if (info.status === "idle") {
+      if (info.status === "idle" && info.roomId === roomId) {
         selectedWorker = id;
         break;
       }
@@ -62,11 +63,11 @@ io.on("connection", (socket) => {
     if (!selectedWorker) {
       socket.emit("job-status", {
         status: "Queued",
-        msg: "All workers busy. Please try again.",
+        msg: `No idle workers in Room: ${roomId}`,
       });
       io.to("admins").emit("admin-activity", {
         time: new Date().toLocaleTimeString(),
-        msg: `Job queued: no workers for User (${socket.id.slice(0, 4)}...)`,
+        msg: `Failed: no workers in [${roomId}] for User (${socket.id.slice(0, 4)}...)`,
       });
       return;
     }
@@ -78,10 +79,10 @@ io.on("connection", (socket) => {
 
     io.to("admins").emit("admin-activity", {
       time: new Date().toLocaleTimeString(),
-      msg: `Assigned task to Worker (${selectedWorker.slice(0, 4)}...)`,
+      msg: `Assigned task to Worker (${selectedWorker.slice(0, 4)}...) in [${roomId}]`,
     });
 
-    io.to(selectedWorker).emit("compute-task", { task, data: input, from: socket.id });
+    io.to(selectedWorker).emit("compute-task", { ...payload, from: socket.id });
     socket.emit("job-status", { status: "Assigned", worker: selectedWorker });
   });
 
